@@ -8,7 +8,7 @@ from stable_baselines3.common.utils import FloatSchedule
 
 HOST = '127.0.0.1'
 PORT = 8747
-MODEL_PATH = './ppo_battle_ssafy.pt'
+MODEL_PATH = './ppo_battle_ssafy_20250923_004716.pt'
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 sock = socket.socket()

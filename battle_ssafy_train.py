@@ -65,7 +65,7 @@ model.learn(
 # print("학습 완료 및 모델 저장됨: ppo_battle_ssafy.zip")
 
 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-save_path = f"./best_model/ppo_battle_ssafy_{timestamp}.pt"
+save_path = f"./ppo_battle_ssafy_{timestamp}.pt"
 
 # PyTorch state_dict 저장
 torch.save(model.policy.state_dict(), save_path)

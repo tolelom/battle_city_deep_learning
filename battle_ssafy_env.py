@@ -9,31 +9,20 @@ G, R, W, F, X, E = 0, 1, 2, 3, 4, 5
 class BattleSsafyEnv(gym.Env):
     metadata = {"render_modes": ["human", "ansi"], "render_fps": 30}
 
-    def __init__(self, size: int = 16, render_mode: Optional[str] = None, n_enemies: int = 3):
-        """_summary_
-
-        Args:
-            size (int, optional): _description_. Defaults to 16.
-            render_mode (Optional[str], optional): _description_. Defaults to None.
-            n_enemies (int, optional): _description_. Defaults to 3.
-            state = {
-                "map": (16,16),               # 지형 + 포탑 + 적 표시
-                "agent": {
-                    "pos": [x, y],            # 에이전트 위치
-                    "hp": int,                # 체력
-                    "bomb": int,              # 일반 폭탄 수
-                    "mega_bomb": int,         # 메가폭탄 수
-                },
-                "enemies": {
-                    "pos": [[x1,y1], [x2,y2], [x3,y3]],   # 각 적 좌표, 없으면 [-1,-1]
-                    "hp":  [hp1, hp2, hp3],               # 각 적 체력, 없으면 0
-                }
-            }
-        """
-        assert size == 16, "요청 사양: 16x16 맵"
+    def __init__(
+            self,
+            size: int = 16,
+            custom_map: Optional[np.ndarray] = None,
+            render_mode: Optional[str] = None,
+            n_enemies: int = 3):
+        assert size == 16, "16x16 맵"
         self.H = self.W = size
         self.render_mode = render_mode
         self.n_enemies = n_enemies
+
+        if custom_map is not None:
+            assert custom_map.shape == (self.H, self.W)
+            assert custom_map.dtype == np.int8
 
         # === Observation space (요청 반영) ===
         self.observation_space = spaces.Dict(
@@ -73,7 +62,7 @@ class BattleSsafyEnv(gym.Env):
         )
 
         # 행동: 0→ 1↑ 2← 3↓ 4:폭탄 5:메가폭탄 6:암호풀기
-        self.action_space = spaces.Discrete(7)
+        self.action_space = spaces.Discrete(13)
 
         self._dir = {
             0: np.array([1, 0], dtype=np.int32),
@@ -130,39 +119,41 @@ class BattleSsafyEnv(gym.Env):
         truncated = False
 
         # 1) 이동
-        if action in (0, 1, 2, 3):
+        if 0 <= action <= 3:
             nxt = self._agent_pos + self._dir[action]
             nxt = np.clip(nxt, [0, 0], [self.W - 1, self.H - 1])
             if self._is_passable(tuple(nxt)):
                 self._agent_pos = nxt
-            # 이동/대기 패널티
-            reward += -0.01
+            # 이동 페널티 완화: -0.005 → -0.002
+            reward += -0.002
 
-        # 2) 폭탄
-        elif action == 4:
+        # 2) 일반 폭탄
+        elif 4 <= action <= 7:
             if self._agent_bomb > 0:
                 self._agent_bomb -= 1
-                hit_t, hit_e = self._fire_bomb(mega=False, splash=False)
-                reward += 10.0 * hit_t + 5.0 * hit_e
-                if hit_t == 0 and hit_e == 0:
-                    reward += -0.01
+                dir_idx = action - 4
+                hit_t, hit_e = self._fire_bomb(mega=False, splash=False, direction=dir_idx)
+                # 포탑 적중 보상 증가: 15.0
+                reward += 15.0 * hit_t + 7.0 * hit_e or -0.005
             else:
-                reward += -0.01
+                reward += -0.005
 
         # 3) 메가폭탄
         elif action == 5:
             if self._agent_mega_bomb > 0:
                 self._agent_mega_bomb -= 1
                 hit_t, hit_e = self._fire_bomb(mega=True, splash=True)
-                reward += 10.0 * hit_t + 5.0 * hit_e
+                # 메가폭탄 보상 증가: 20.0
+                reward += 20.0 * hit_t + 10.0 * hit_e
                 if hit_t == 0 and hit_e == 0:
-                    reward += -0.01
+                    reward += -0.005
             else:
-                reward += -0.01
+                reward += -0.005
 
-        # 4) 암호풀기 (훅: 현재 no-op + 패널티)
+        # 4) 암호풀기: 소정의 보상 추가
         elif action == 6:
-            reward += -0.01
+            # 기존 패널티 대신 소량 보상(+0.1)으로 유도
+            reward += 0.1
 
         # 보급 체크
         self._try_refill_mega()
@@ -170,11 +161,14 @@ class BattleSsafyEnv(gym.Env):
         # 포탑 시야에 노출되면 사망
         if self._in_los_of_any_turret():
             self._agent_hp = 0
-            reward += -5.0
+            # 사망 페널티 완화: -5.0 → -3.0
+            reward += -3.0
             terminated = True
 
         # 모든 포탑 제거 시 종료
         if len(self._turrets) == 0 and not terminated:
+            # 게임 클리어 보상 추가
+            reward += 5.0
             terminated = True
 
         return self._get_obs(), float(reward), terminated, truncated, self._get_info()
@@ -364,7 +358,7 @@ class BattleSsafyEnv(gym.Env):
         else:
             return 0, 1, e_idx, pos
 
-    def _fire_bomb(self, mega: bool, splash: bool) -> Tuple[int, int]:
+    def _fire_bomb(self, mega: bool, splash: bool, direction: int) -> Tuple[int, int]:
         """폭탄/메가폭탄 발사.
         return: (turret_kills, enemy_kills)
         """
