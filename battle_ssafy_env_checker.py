@@ -3,7 +3,7 @@ from battle_ssafy_env import BattleSsafyEnv
 import gymnasium as gym
 
 
-env = gym.make('BattleSSafyEnv-v0')
+env = gym.make('BattleSsafyEnv-v0')
 
 try:
     check_env(env.unwrapped)

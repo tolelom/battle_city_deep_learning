@@ -3,12 +3,17 @@ import numpy as np
 import gymnasium as gym
 
 gym.register(
-    id='BattleSSafyEnv-v0',
+    id='BattleSsafyEnv-v0',
     entry_point="battle_ssafy_env:BattleSsafyEnv",
     max_episode_steps=100,
 )
 
 class BattleSsafyEnv(gym.Env):
+    metadata = {
+        "render_modes": ["human", "rgb_array"],
+        "render_fps": 30,
+    }
+
     def __init__(self, size: int = 16):
         # 맵의 크기
         self.size = size
@@ -82,7 +87,7 @@ class BattleSsafyEnv(gym.Env):
 
         # 보상 세팅
         # Option 1: Small step penalty to encourage efficiency
-        reward = 1 if terminated else -0.01
+        reward = 10 if terminated else -0.005
 
         # 보상 세팅 끝
 
