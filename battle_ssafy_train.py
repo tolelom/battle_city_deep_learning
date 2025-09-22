@@ -12,11 +12,12 @@ print(f"Using device: {device}")
 def make_env():
     return BattleSsafyEnv(size=16)
 
-# 벡터 환경 및 모니터링
+# 벡터 환경 및 모니터링 (학습/평가 환경 동일하게 VecMonitor 적용)
 train_env = DummyVecEnv([make_env])
 train_env = VecMonitor(train_env)
 
 eval_env = DummyVecEnv([make_env])
+eval_env = VecMonitor(eval_env)
 
 # 평가 콜백: 평균 리턴 ≥ 0.9 시 학습 중단 및 모델 저장
 stop_callback = StopTrainingOnRewardThreshold(reward_threshold=0.9, verbose=1)
@@ -38,10 +39,9 @@ model = PPO(
     n_epochs=10,
     gamma=0.99,
     verbose=1,
-    device=device,                # GPU 혹은 CPU 자동 선택
+    device=device,
     policy_kwargs=dict(
-        # 필요 시 네트워크 구조 조정 예시
-        net_arch=[dict(pi=[128, 128], vf=[128, 128])],
+        net_arch=dict(pi=[128, 128], vf=[128, 128]),  # dict 형식 사용
         activation_fn=torch.nn.ReLU,
     ),
 )
