@@ -132,10 +132,12 @@ action_map = {
 }
 
 def select_action(obs: dict) -> str:
-    obs_proc = preprocess_obs(obs, env_dummy.observation_space, DEVICE)
-    with torch.no_grad():
-        action_tensor, _ = policy(obs_proc, deterministic=True)
-    action_idx = int(action_tensor.cpu().numpy()[0])
+    """
+    Stable-Baselines3 정책의 predict 메서드를 사용하여 액션을 선택합니다.
+    """
+    # policy.predict는 NumPy obs 딕셔너리를 직접 처리합니다.
+    action, _ = policy.predict(obs, deterministic=True)
+    action_idx = int(action)
     return action_map[action_idx]
 
 if __name__ == '__main__':
@@ -144,5 +146,6 @@ if __name__ == '__main__':
     while game_data:
         obs = parse_data(game_data)
         cmd = select_action(obs)
+        print(cmd)
         game_data = submit(cmd)
     close()
