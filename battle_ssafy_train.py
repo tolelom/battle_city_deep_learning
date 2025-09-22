@@ -12,7 +12,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {device}")
 
 def make_env():
-    return BattleSsafyEnv(size=16)
+    return BattleSsafyEnv(size=16, render_mode="human")
 
 # 로그 디렉터리
 log_dir = "./tensorboard_logs/"

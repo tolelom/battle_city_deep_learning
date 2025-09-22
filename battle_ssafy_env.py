@@ -1,10 +1,12 @@
 from typing import Optional, Tuple, Dict, List
 import numpy as np
 import gymnasium as gym
-from gymnasium import spaces
 
-# 타일 인코딩
-G, R, W, F, X, E = 0, 1, 2, 3, 4, 5
+gym.register(
+    id='BattleSsafyEnv-v0',
+    entry_point="battle_ssafy_env:BattleSsafyEnv",
+    max_episode_steps=100,
+)
 
 class BattleSsafyEnv(gym.Env):
     metadata = {"render_modes": ["human", "ansi"], "render_fps": 30}
@@ -85,6 +87,8 @@ class BattleSsafyEnv(gym.Env):
         # 내부 상태(포지션/HP/탄수 등)
         self._base_map = np.zeros((self.H, self.W), dtype=np.int8)  # 지형만
         self._turrets: List[Tuple[int, int]] = []  # X 좌표 리스트
+        self._turrets_hp: List[int] = []  # 포탑 체력 병렬 리스트  <-- 추가
+        
         self._agent_pos = np.array([0, 0], dtype=np.int32)
         self._agent_hp = 100
         self._agent_bomb = 3
@@ -102,22 +106,48 @@ class BattleSsafyEnv(gym.Env):
         self._rng = self.np_random
 
         # 1) 지형 초기화
-        self._base_map[:] = G
-        self._random_scatter(R, count=20)  # 벽
-        self._random_scatter(W, count=15)  # 물
-        self._random_scatter(F, count=4)   # 보급소
-        self._turrets = self._random_scatter(X, count=3, as_list=True)  # 포탑
+        # self._base_map[:] = G
+        # self._random_scatter(R, count=20)  # 벽
+        # self._random_scatter(W, count=15)  # 물
+        # self._random_scatter(F, count=4)   # 보급소
+        # self._turrets = self._random_scatter(X, count=3, as_list=True)  # 포탑
+        self._base_map = np.array([
+            [R, R, R, G, G, G, F, G, G, F, G, G, G, G, G, X],
+            [R, G, G, G, G, G, S, S, S, S, G, G, G, G, G, G],
+            [R, G, G, G, G, G, S, R, R, S, G, G, G, G, G, G],
+            [G, G, G, G, G, G, R, R, R, R, G, G, G, G, G, G],
+            [G, G, G, G, G, T, G, G, G, G, T, G, G, G, G, G],
+            [G, G, R, R, W, W, T, G, G, T, W, W, R, R, G, G],
+            [G, G, T, G, G, G, G, G, G, G, G, G, G, T, G, G],
+            [G, G, R, R, G, R, G, W, W, G, R, G, R, R, G, G],
+            [G, G, R, R, G, R, G, W, W, G, R, G, R, R, G, G],
+            [G, G, T, G, G, G, G, G, G, G, G, G, G, T, G, G],
+            [G, G, R, R, W, W, T, G, G, T, W, W, R, R, G, G],
+            [G, G, G, G, G, T, G, G, G, G, T, G, G, G, G, G],
+            [G, G, G, G, G, G, R, R, R, R, G, G, G, G, G, G],
+            [G, G, G, G, G, G, S, R, R, S, G, G, G, G, G, R],
+            [G, G, G, G, G, G, S, S, S, S, G, G, G, G, G, R],
+            [H, G, G, G, G, G, F, G, G, F, G, G, G, R, R, R],
+        ], dtype=np.int8)
+
+        self._turrets = [(x, y)
+                 for y in range(self.H)
+                 for x in range(self.W)
+                 if self._base_map[y, x] == X]
+        self._turrets_hp = [100 for _ in range(len(self._turrets))]
 
         # 2) 에이전트 초기화
         self._agent_pos = self._sample_passable()
         self._agent_hp = 100
-        self._agent_bomb = 3
-        self._agent_mega_bomb = 1
+        self._agent_bomb = 99
+        self._agent_mega_bomb = 0
 
         # 3) 적 초기화
         for i in range(self.n_enemies):
             self._enemies_pos[i] = self._sample_passable()
             self._enemies_hp[i] = 100
+
+        self._turrets_hp = [100 for _ in range(len(self._turrets))]
 
         # 시작 시 보급 체크(보급소 인접 시 메가폭탄 +1)
         self._try_refill_mega()
@@ -142,10 +172,12 @@ class BattleSsafyEnv(gym.Env):
         elif action == 4:
             if self._agent_bomb > 0:
                 self._agent_bomb -= 1
-                hit_t, hit_e = self._fire_bomb(mega=False, splash=False)
-                reward += 10.0 * hit_t + 5.0 * hit_e
-                if hit_t == 0 and hit_e == 0:
-                    reward += -0.01
+                t_kill, e_kill, tree_kill, dmg = self._fire_bomb(mega=False, splash=False)
+                # 보상: 파괴 보상 + 데미지 비례 보상 + 나무 파괴 보상
+                reward += 10.0 * t_kill + 5.0 * e_kill + 2.0 * tree_kill
+                reward += 0.05 * dmg   # 데미지당 보상(수치 조절 가능)
+                if t_kill == 0 and e_kill == 0 and tree_kill == 0:
+                    reward += -0.01  # 빗나감 소소 패널티
             else:
                 reward += -0.01
 
@@ -153,13 +185,14 @@ class BattleSsafyEnv(gym.Env):
         elif action == 5:
             if self._agent_mega_bomb > 0:
                 self._agent_mega_bomb -= 1
-                hit_t, hit_e = self._fire_bomb(mega=True, splash=True)
-                reward += 10.0 * hit_t + 5.0 * hit_e
-                if hit_t == 0 and hit_e == 0:
+                t_kill, e_kill, tree_kill, dmg = self._fire_bomb(mega=True, splash=True)
+                reward += 10.0 * t_kill + 5.0 * e_kill + 2.0 * tree_kill
+                reward += 0.05 * dmg
+                if t_kill == 0 and e_kill == 0 and tree_kill == 0:
                     reward += -0.01
             else:
                 reward += -0.01
-
+        
         # 4) 암호풀기 (훅: 현재 no-op + 패널티)
         elif action == 6:
             reward += -0.01
@@ -176,6 +209,9 @@ class BattleSsafyEnv(gym.Env):
         # 모든 포탑 제거 시 종료
         if len(self._turrets) == 0 and not terminated:
             terminated = True
+
+        if self.render_mode == "human":
+            self.render()
 
         return self._get_obs(), float(reward), terminated, truncated, self._get_info()
 
@@ -266,7 +302,17 @@ class BattleSsafyEnv(gym.Env):
     def _tile_char(self, val: int, xy: Tuple[int, int]) -> str:
         if (xy[0] == self._agent_pos[0]) and (xy[1] == self._agent_pos[1]):
             return "A"
-        return {G: ".", R: "R", W: "W", F: "F", X: "X", E: "E"}.get(int(val), "?")
+        return {
+            G: ".",
+            R: "R",
+            W: "W",
+            F: "F",
+            X: "X",
+            E: "E",
+            T: "T",   # 나무
+            S: "S",   # 모래
+            H: "H",   # 내 포탑
+        }.get(int(val), "?")
 
     def _random_scatter(self, kind: int, count: int, as_list: bool = False):
         coords = []
@@ -290,13 +336,15 @@ class BattleSsafyEnv(gym.Env):
 
     def _is_passable(self, xy: Tuple[int, int]) -> bool:
         t = self._base_map[xy[1], xy[0]]
-        if t in (R, W, F):
+        # 못 지나는 타일: R, F, T, H (H는 내 포탑이라 통행 불가로 가정)
+        if t in (R, F, T, H, W):
             return False
-        # 적/포탑 위치는 통과 불가
+        # 나머지는 통행 가능 (G, S, 등)
+        # 적/포탑 점유 칸은 별도 차단
         if (xy in self._turrets):
             return False
         for i, p in enumerate(self._enemies_pos):
-            if p is not None and self._enemies_hp[i] > 0 and p[0] == xy[0] and p[1] == xy[1]:
+            if p is not None and self._enemies_hp[i] > 0 and (p[0], p[1]) == xy:
                 return False
         return True
 
@@ -364,43 +412,115 @@ class BattleSsafyEnv(gym.Env):
         else:
             return 0, 1, e_idx, pos
 
-    def _fire_bomb(self, mega: bool, splash: bool) -> Tuple[int, int]:
-        """폭탄/메가폭탄 발사.
-        return: (turret_kills, enemy_kills)
+    def _fire_bomb(self, mega: bool, splash: bool) -> Tuple[int, int, int, float]:
         """
-        t_hit, e_hit, e_idx, pos = self._first_target_in_line()
+        폭탄/메가폭탄 발사.
+        return: (turret_kills, enemy_kills, tree_kills, total_damage_dealt)
+        - turret/enemy: hp 감소, hp <= 0 이면 제거(킬)
+        - tree(T): 폭탄 위력 >= 1이면 제거(일반폭탄으로 제거 가능). 제거하면 tree_kills += 1
+        """
+        # 위력 설정
+        power = 70 if mega else 30
+
+        total_damage = 0.0
         turret_kills = 0
         enemy_kills = 0
+        tree_kills = 0
 
-        # 메인 타겟 처리(HP를 0으로)
+        # 1) 찾은 타겟(가장 가까운 한 개)을 처리 (기존 _first_target_in_line 로 사용)
+        t_hit, e_hit, e_idx, pos = self._first_target_in_line()
+        if pos is None:
+            # 명중 대상 없음 -> 하지만 메가 스플래시 등은 없으므로 0 반환
+            return turret_kills, enemy_kills, tree_kills, total_damage
+
+        # helper to try damage turret at pos
+        def damage_turret_at(p: Tuple[int,int]):
+            nonlocal total_damage, turret_kills
+            # find turret index in list
+            for i, tpos in enumerate(self._turrets):
+                if tpos == p:
+                    # apply damage
+                    dmg = min(power, self._turrets_hp[i])
+                    self._turrets_hp[i] -= power
+                    total_damage += dmg
+                    # if dead -> remove turret and corresponding hp entry
+                    if self._turrets_hp[i] <= 0:
+                        # remove turret & hp
+                        self._turrets.pop(i)
+                        self._turrets_hp.pop(i)
+                        turret_kills += 1
+                    return True
+            return False
+
+        # helper to damage enemy index
+        def damage_enemy(idx: int):
+            nonlocal total_damage, enemy_kills
+            if idx is None:
+                return False
+            if 0 <= idx < len(self._enemies_hp) and self._enemies_pos[idx] is not None and self._enemies_hp[idx] > 0:
+                dmg = min(power, self._enemies_hp[idx])
+                self._enemies_hp[idx] -= power
+                total_damage += dmg
+                if self._enemies_hp[idx] <= 0:
+                    # kill enemy
+                    self._enemies_pos[idx] = None
+                    enemy_kills += 1
+                return True
+            return False
+
+        # helper to destroy a tree at p (if present)
+        def destroy_tree_at(p: Tuple[int,int]):
+            nonlocal total_damage, tree_kills
+            x, y = p
+            if self._base_map[y, x] == T:
+                # 나무는 일반폭탄으로도 제거 가능 - 위력 충족하면 제거
+                # (여기서는 어떤 폭탄이든 제거하도록 함)
+                # 데미지는 power (단, 실질적으로 tree에는 HP 보관 안함)
+                total_damage += power
+                self._base_map[y, x] = G  # 제거 -> 통과 가능
+                tree_kills += 1
+                return True
+            return False
+
+        # 메인 타겟 처리(한 점)
+        # 우선 포탑
         if t_hit and pos is not None:
-            # 포탑 제거
-            if pos in self._turrets:
-                self._turrets.remove(pos)
-                turret_kills += 1
+            damage_turret_at(pos)
         elif e_hit and e_idx is not None:
-            # 적 제거
-            self._enemies_hp[e_idx] = 0
-            self._enemies_pos[e_idx] = None
-            enemy_kills += 1
+            damage_enemy(e_idx)
+        else:
+            # 혹은 만약 타겟이 나무로 표시되어 있을 가능성 검토
+            if pos is not None:
+                destroy_tree_at(pos)
 
-        # 스플래시(3x3)
+        # 스플래시 처리가 필요하면(mega & splash): 주변 3x3에도 데미지 적용
         if mega and splash and pos is not None:
             cx, cy = pos
             for y in range(max(0, cy - 1), min(self.H, cy + 2)):
                 for x in range(max(0, cx - 1), min(self.W, cx + 2)):
-                    # 주변 포탑
-                    if (x, y) in self._turrets:
-                        self._turrets.remove((x, y))
-                        turret_kills += 1
-                    # 주변 적
-                    for i, p in enumerate(self._enemies_pos):
-                        if p is not None and self._enemies_hp[i] > 0 and p[0] == x and p[1] == y:
-                            self._enemies_hp[i] = 0
-                            self._enemies_pos[i] = None
-                            enemy_kills += 1
+                    p = (x, y)
+                    # 이미 처리한 메인 타겟은 건너뛰지 않아도 무방(중첩데미지 허용 여부는 정책)
+                    # 여기선 메인타겟을 제외하고 주변에 적용 (중첩 방지)
+                    if p == pos:
+                        continue
+                    # 포탑 존재하면 데미지
+                    # (주의: 인덱스가 바뀔 수 있으니 루프 안에서 점검)
+                    # try turret
+                    for i, tpos in enumerate(list(self._turrets)):  # copy to be safe
+                        if tpos == p:
+                            # damage turret at index i (call helper)
+                            # note: damage_turret_at uses list mutation; safe when iterating copy
+                            damage_turret_at(p)
+                            break
+                    # 적
+                    for i, enemy_pos in enumerate(self._enemies_pos):
+                        if enemy_pos is not None and enemy_pos[0] == x and enemy_pos[1] == y and self._enemies_hp[i] > 0:
+                            damage_enemy(i)
+                    # 나무
+                    if self._base_map[y, x] == T:
+                        destroy_tree_at(p)
 
-        return turret_kills, enemy_kills
+        return turret_kills, enemy_kills, tree_kills, total_damage
 
     def _in_los_of_any_turret(self) -> bool:
         a = (int(self._agent_pos[0]), int(self._agent_pos[1]))
