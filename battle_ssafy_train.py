@@ -1,5 +1,6 @@
 import gymnasium as gym
 import torch
+import datetime
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold
 from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
@@ -60,5 +61,12 @@ model.learn(
     # callback=[tqdm_callback, eval_callback]
 )
 
-model.save("./best_model/ppo_battle_ssafy")
-print("학습 완료 및 모델 저장됨: ppo_battle_ssafy.zip")
+# model.save("./best_model/ppo_battle_ssafy")
+# print("학습 완료 및 모델 저장됨: ppo_battle_ssafy.zip")
+
+timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+save_path = f"./best_model/ppo_battle_ssafy_{timestamp}.pt"
+
+# PyTorch state_dict 저장
+torch.save(model.policy.state_dict(), save_path)
+print(f"학습 완료 및 모델 저장됨: {save_path}")
