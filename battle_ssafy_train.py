@@ -1,4 +1,5 @@
 import gymnasium as gym
+import numpy as np
 import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import EvalCallback, StopTrainingOnRewardThreshold
@@ -10,8 +11,27 @@ from battle_ssafy_env import BattleSsafyEnv
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using device: {device}")
 
+fixed_map = np.array([
+    [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+    [0,1,1,1,0,0,0,0,0,0,0,0,1,1,1,0],
+    [0,1,0,0,0,2,2,2,2,2,0,0,0,0,1,0],
+    [0,1,0,0,0,2,0,0,0,2,0,0,0,0,1,0],
+    [0,1,0,0,0,2,0,3,0,2,0,0,0,0,1,0],
+    [0,1,0,0,0,2,2,2,2,2,0,0,0,0,1,0],
+    [0,1,1,1,0,0,0,0,0,0,0,0,1,1,1,0],
+    [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+    [0,0,0,3,3,3,0,0,0,3,3,3,0,0,0,0],
+    [0,0,0,3,0,3,0,0,0,3,0,3,0,0,0,0],
+    [0,0,0,3,3,3,0,0,0,3,3,3,0,0,0,0],
+    [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+    [0,1,1,1,0,0,1,1,1,0,0,1,1,1,0,0],
+    [0,1,0,0,0,0,0,0,0,0,0,0,0,1,0,0],
+    [0,1,0,0,0,0,0,0,0,0,0,0,0,1,0,0],
+    [0,1,1,1,0,0,1,1,1,0,0,1,1,1,0,0],
+], dtype=np.int32)
+
 def make_env():
-    return BattleSsafyEnv(size=16)
+    return BattleSsafyEnv(size=16, fixed_map=fixed_map)
 
 # 로그 디렉터리
 log_dir = "./tensorboard_logs/"
