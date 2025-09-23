@@ -104,9 +104,7 @@ class BattleSsafyEnv(gym.Env):
 
     def step(self, action):
         direction = self._action_to_direction[action]
-
-        next_location = np.clip(self._agent_location + dir, 0, self.size - 1)
-
+        next_location = np.clip(self._agent_location + direction, 0, self.size - 1)
         tile = self._fixed_map[next_location[1], next_location[0]]
 
         if self._can_move[tile]:
