@@ -10,6 +10,7 @@ gym.register(
 )
 
 G, R, W, F, X, E, S, T, H = 0, 1, 2, 3, 4, 5, 6, 7, 8
+# 못 지나는 타일: R, F, T, H, W, X, E (H는 내 포탑이라 통행 불가로 가정)
 
 class BattleSsafyEnv(gym.Env):
     # metadata = {"render_modes": ["human", "ansi"], "render_fps": 30}
@@ -71,12 +72,14 @@ class BattleSsafyEnv(gym.Env):
                 # - positions: (-1,-1) means empty slot
                 "enemies_pos": spaces.Box(-1, self.W - 1, shape=(self.n_enemies, 2), dtype=np.int32),
                 "enemies_hp":  spaces.Box(0, 100,         shape=(self.n_enemies,),   dtype=np.int32),
-
+                
+                "valid_action_mask": spaces.MultiBinary(self.action_space.n),
             }
         )
 
-        # 행동: 0→ 1↑ 2← 3↓ 4:폭탄 5:메가폭탄 6:암호풀기
-        self.action_space = spaces.Discrete(7)
+        # 행동: 0:→ 1:↑ 2:← 3:↓ 4~7:방향 폭탄 8~11:방향 메가 12:암호풀기
+        self.action_space = spaces.Discrete(13)
+
 
         self._dir = {
             0: np.array([1, 0], dtype=np.int32),
@@ -108,6 +111,11 @@ class BattleSsafyEnv(gym.Env):
         # 나(우리팀) 포탑(H)도 HP 트래킹 (X와 대칭 구조)
         self._home_turrets: List[Tuple[int,int]] = []
         self._home_turrets_hp: List[int] = []
+
+
+        # 최근 행동 로그
+        self._last_agent_action: str = "idle"
+        self._last_enemy_actions: List[str] = ["idle"] * self.n_enemies
 
 
     # ============ Gym API ============
@@ -158,6 +166,11 @@ class BattleSsafyEnv(gym.Env):
         self._enemy_kill_count = 0
         self._agent_death_count = 0
 
+        # 최근 행동 초기화
+        self._last_agent_action = "idle"
+        self._last_enemy_actions = ["idle"] * self.n_enemies
+
+
         # 2) 에이전트 초기화
         self._agent_pos = np.array([10, 0], dtype=np.int32)
         self._agent_hp = 100
@@ -168,11 +181,11 @@ class BattleSsafyEnv(gym.Env):
         for i in range(self.n_enemies):
             self._enemies_pos[i] = self._sample_passable()
             self._enemies_hp[i] = 100
-
         
         # 시작 시 보급 체크(보급소 인접 시 메가폭탄 +1)
         self._try_refill_mega()
 
+        self.valid_mask = self._compute_valid_mask()
         return self._get_obs(), self._get_info()
 
     def step(self, action: int):
@@ -180,50 +193,93 @@ class BattleSsafyEnv(gym.Env):
         terminated = False
         truncated = False
 
-        # 1) 이동
+        # 기본: 적 행동 로그 초기화
+        self._last_enemy_actions = ["idle"] * self.n_enemies
+
+        # valid_action_mask 갱신
+        valid_mask = np.ones(self.action_space.n, dtype=np.int8)
+
+        # 이동 가능 여부 확인
+        dir_map = {
+            0: (1, 0),   # → 오른쪽
+            1: (0, 1),   # ↑ 위
+            2: (-1, 0),  # ← 왼쪽
+            3: (0, -1),  # ↓ 아래
+        }
+        for act, (dx, dy) in dir_map.items():
+            nx, ny = self._agent_pos[0] + dx, self._agent_pos[1] + dy
+            if not (0 <= nx < self.W and 0 <= ny < self.H) or not self._is_passable((nx, ny)):
+                valid_mask[act] = 0
+
+        # 폭탄 (4~7) 유효성 확인
+        if self._agent_bomb <= 0:
+            valid_mask[4:8] = 0
+
+        # 메가폭탄 (8~11) 유효성 확인
+        if self._agent_mega_bomb <= 0:
+            valid_mask[8:12] = 0
+
+        # 암호풀기 유효성 확인
+        if not self._is_adjacent_to_supply() or self._agent_mega_bomb >= 10:
+            valid_mask[12] = 0
+
+        # 0~3: 이동
         if action in (0, 1, 2, 3):
             nxt = self._agent_pos + self._dir[action]
             nxt = np.clip(nxt, [0, 0], [self.W - 1, self.H - 1])
             if self._is_passable(tuple(nxt)):
                 self._agent_pos = nxt
-            # 이동/대기 패널티
             reward += -0.01
+            # 최근 에이전트 행동 기록
+            move_name = {0:"move_right", 1:"move_up", 2:"move_left", 3:"move_down"}[action]
+            self._last_agent_action = move_name
 
-        # 2) 폭탄
-        elif action == 4:
+        # 4~7: 방향 폭탄
+        elif 4 <= action <= 7:
             if self._agent_bomb > 0:
-                self._agent_bomb -= 1
-                t_kill, e_kill, tree_kill, dmg = self._fire_bomb(mega=False, splash=False)
-                # 보상: 파괴 보상 + 데미지 비례 보상
-                reward += 10.0 * t_kill + 5.0 * e_kill
-                reward += 0.05 * dmg   # 데미지당 보상(수치 조절 가능)
-                if t_kill == 0 and e_kill == 0 and tree_kill == 0:
-                    reward += -3 # 빗나감 소소 패널티
-            else:
-                reward += -0.01
-
-        # 3) 메가폭탄
-        elif action == 5:
-            if self._agent_mega_bomb > 0:
-                self._agent_mega_bomb -= 1
-                t_kill, e_kill, tree_kill, dmg = self._fire_bomb(mega=True, splash=False)
-                reward += 10.0 * t_kill + 5.0 * e_kill
-                reward += 0.05 * dmg
+                # self._agent_bomb -= 1
+                dir_map = {4:(1,0), 5:(0,1), 6:(-1,0), 7:(0,-1)}
+                dir_name = {4:"bomb_right", 5:"bomb_up", 6:"bomb_left", 7:"bomb_down"}[action]
+                dx, dy = dir_map[action]
+                t_kill, e_kill, tree_kill, dmg = self._fire_bomb_dir(mega=False, dx=dx, dy=dy)
+                reward += 10.0 * t_kill + 5.0 * e_kill + 0.05 * dmg
                 if t_kill == 0 and e_kill == 0 and tree_kill == 0:
                     reward += -3
+                self._last_agent_action = dir_name
             else:
-                reward += -0.01
-        
-        # 4) 암호풀기 (훅: 현재 no-op + 패널티)
-        elif action == 6:
-            reward += 0
+                reward += -3
+                self._last_agent_action = "bomb_empty"
+
+        # 8~11: 방향 메가폭탄
+        elif 8 <= action <= 11:
+            if self._agent_mega_bomb > 0:
+                # self._agent_mega_bomb -= 1
+                dir_map = {8:(1,0), 9:(0,1), 10:(-1,0), 11:(0,-1)}
+                dir_name = {8:"mega_right", 9:"mega_up", 10:"mega_left", 11:"mega_down"}[action]
+                dx, dy = dir_map[action]
+                t_kill, e_kill, tree_kill, dmg = self._fire_bomb_dir(mega=True, dx=dx, dy=dy)
+                reward += 10.0 * t_kill + 5.0 * e_kill + 0.05 * dmg
+                if t_kill == 0 and e_kill == 0 and tree_kill == 0:
+                    reward += -3
+                self._last_agent_action = dir_name
+            else:
+                reward += -3
+                self._last_agent_action = "mega_empty"
+
+        # 12: 암호풀기 (보급소 인접 + 메가 < 10일 때만 증가, 보상 0)
+        elif action == 12:
+            if self._agent_mega_bomb < 10 and self._is_adjacent_to_supply():
+                self._agent_mega_bomb += 1
+                self._last_agent_action = "decrypt_success"
+            else:
+                self._last_agent_action = "decrypt_invalid"
+                reward += -3
 
         # 보급 체크
         self._try_refill_mega()
 
-        # --- Enemy attack phase: 적의 공격(Agent는 오직 이 공격으로 데미지 받음) ---
-        # 규칙: 적은 같은 행/열에 있고 LOS가 성립하며 거리 <= 3 이면 공격 성공
-        ENEMY_ATTACK_POWER = 30  # 필요 시 조정
+        # --- Enemy attack phase ---
+        ENEMY_ATTACK_POWER = 30
         for i, pos in enumerate(self._enemies_pos):
             if pos is None or self._enemies_hp[i] <= 0:
                 continue
@@ -231,12 +287,14 @@ class BattleSsafyEnv(gym.Env):
 
             if self._enemy_can_attack_agent(ex, ey):
                 self._agent_hp -= ENEMY_ATTACK_POWER
-                reward += -5.0  # 맞았을 때 패널티(튜닝 가능)
+                reward += -5.0
+                self._last_enemy_actions[i] = "attack"
                 if self._agent_hp <= 0:
                     self._agent_death_count += 1
-                    # if self._agent_death_count >= 2 :
                     terminated = True
-                    break                         # 여러 적의 추가 타격은 무의미
+                    break
+            else:
+                self._last_enemy_actions[i] = "idle"
 
         # === Termination Rules ===
         # 1) 상대 포탑(X) 제거
@@ -265,25 +323,54 @@ class BattleSsafyEnv(gym.Env):
         return self._get_obs(), float(reward), terminated, truncated, self._get_info()
 
     def render(self):
-        grid = self._compose_visible_map()
         if self.render_mode == "rgb_array":
             return self._rgb_from_grid(cell=20)
 
-        # 아래는 기존 텍스트 렌더
-        lines = []
-        for y in range(self.H - 1, -1, -1):
-            row = []
-            for x in range(self.W):
-                ch = grid[y, x]
-                row.append(self._tile_char(ch, (x, y)))
-            lines.append(" ".join(row))
-        out = "\n".join(lines) + "\n"
-
-        if self.render_mode == "ansi":
-            return out
         if self.render_mode == "human":
-            print(out)
+            lines = []
 
+            # 에이전트
+            ax, ay = int(self._agent_pos[0]), int(self._agent_pos[1])
+            agent_line = (
+                f"Agent | action={self._last_agent_action} "
+                f"| pos=({ax},{ay}) | hp={self._agent_hp} "
+                f"| bomb={self._agent_bomb} | mega={self._agent_mega_bomb}"
+            )
+            lines.append(agent_line)
+
+            # 적
+            lines.append("Enemies:")
+            any_enemy = False
+            for i in range(self.n_enemies):
+                pos = self._enemies_pos[i]
+                hp = int(self._enemies_hp[i])
+                if pos is None or hp <= 0:
+                    continue
+                ex, ey = int(pos[0]), int(pos[1])
+                act = self._last_enemy_actions[i] if i < len(self._last_enemy_actions) else "idle"
+                lines.append(f"  - id={i} | action={act} | pos=({ex},{ey}) | hp={hp}")
+                any_enemy = True
+            if not any_enemy:
+                lines.append("  (none)")
+
+            # 적 포탑(X)
+            lines.append("Enemy Turrets (X):")
+            if len(self._turrets) == 0:
+                lines.append("  (none)")
+            else:
+                for (tx, ty), thp in zip(self._turrets, self._turrets_hp):
+                    lines.append(f"  - pos=({tx},{ty}) | hp={int(thp)}")
+
+            # 우리 포탑(H)
+            lines.append("Home Turrets (H):")
+            if len(self._home_turrets) == 0:
+                lines.append("  (none)")
+            else:
+                for (hx, hy), hhp in zip(self._home_turrets, self._home_turrets_hp):
+                    lines.append(f"  - pos=({hx},{hy}) | hp={int(hhp)}")
+
+            print("\n".join(lines) + "\n")
+            return
 
     def close(self):
         pass
@@ -299,40 +386,22 @@ class BattleSsafyEnv(gym.Env):
                 enemies_pos[i] = pos
                 enemies_hp[i]  = self._enemies_hp[i]
 
-        return {
+        self.valid_mask = self._compute_valid_mask()
+
+        obs = {
             "map": vmap.astype(np.int8, copy=True),
-
-            "agent_pos":       self._agent_pos.astype(np.int32, copy=True),
-            "agent_hp":        np.array([self._agent_hp],        dtype=np.int32),  # ← (1,)
-            "agent_bomb":      np.array([self._agent_bomb],      dtype=np.int32),  # ← (1,)
-            "agent_mega_bomb": np.array([self._agent_mega_bomb], dtype=np.int32),  # ← (1,)
-
+            "agent_pos": self._agent_pos.astype(np.int32, copy=True),
+            "agent_hp": np.array([self._agent_hp], dtype=np.int32),
+            "agent_bomb": np.array([self._agent_bomb], dtype=np.int32),
+            "agent_mega_bomb": np.array([self._agent_mega_bomb], dtype=np.int32),
             "enemies_pos": enemies_pos,
-            "enemies_hp":  enemies_hp,
+            "enemies_hp": enemies_hp,
+            # 관측에도(원한다면) 넣되, space와 dtype 일치
+            "valid_action_mask": self.valid_mask.astype(np.int8),
         }
-        # vmap = self._compose_visible_map()
+        return obs
 
-        # enemies_pos = np.full((self.n_enemies, 2), -1, dtype=np.int32)
-        # enemies_hp = np.zeros(self.n_enemies, dtype=np.int32)
-
-        # for i, pos in enumerate(self._enemies_pos):
-        #     if pos is not None and self._enemies_hp[i] > 0:
-        #         enemies_pos[i] = pos
-        #         enemies_hp[i] = self._enemies_hp[i]
-
-        # return {
-        #     "map": vmap.astype(np.int8, copy=True),
-        #     "agent": {
-        #         "pos": self._agent_pos.astype(np.int32, copy=True),
-        #         "hp": np.int32(self._agent_hp),
-        #         "bomb": np.int32(self._agent_bomb),
-        #         "mega_bomb": np.int32(self._agent_mega_bomb),
-        #     },
-        #     "enemies": {
-        #         "pos": enemies_pos,
-        #         "hp": enemies_hp,
-        #     },
-        # }
+    
 
     def _get_info(self) -> Dict:
         # 에이전트와 가장 가까운 포탑까지의 맨해튼 거리(없으면 -1)
@@ -396,8 +465,8 @@ class BattleSsafyEnv(gym.Env):
 
     def _is_passable(self, xy: Tuple[int, int]) -> bool:
         t = self._base_map[xy[1], xy[0]]
-        # 못 지나는 타일: R, F, T, H, W (H는 내 포탑이라 통행 불가로 가정)
-        if t in (R, F, T, H, W):
+        # 못 지나는 타일: R, F, T, H, W, X, E (H는 내 포탑이라 통행 불가로 가정)
+        if t in (R, F, T, H, W, X, E):
             return False
         # 나머지는 통행 가능 (G, S, 등)
         # 적/포탑 점유 칸은 별도 차단
@@ -665,3 +734,157 @@ class BattleSsafyEnv(gym.Env):
         img[ys+pad:ys+cell-pad, xs+pad:xs+cell-pad] = (255, 255, 255)  # 내부 흰색
 
         return img
+
+    def _is_adjacent_to_supply(self) -> bool:
+        x, y = self._agent_pos
+        for dx, dy in ((1,0),(-1,0),(0,1),(0,-1)):
+            nx, ny = x+dx, y+dy
+            if 0 <= nx < self.W and 0 <= ny < self.H:
+                if self._base_map[ny, nx] == F:
+                    return True
+        return False
+
+    def _fire_bomb_dir(self, mega: bool, dx: int, dy: int) -> Tuple[int, int, int, float]:
+        """
+        지정된 방향(dx,dy)으로 사거리 3, 단일 타격.
+        차단 타일 R/F는 관통 불가, W는 통과.
+        return: (turret_kills, enemy_kills, tree_kills, total_damage)
+        """
+        power = 70 if mega else 30
+
+
+        if mega:
+            if self._agent_mega_bomb <= 0:
+                return 0, 0, 0, 0.0
+            self._agent_mega_bomb -= 1
+        else:
+            if self._agent_bomb <= 0:
+                return 0, 0, 0, 0.0
+            self._agent_bomb -= 1
+
+        total_damage = 0.0
+        turret_kills = 0
+        enemy_kills = 0
+        tree_kills = 0
+
+        ax, ay = int(self._agent_pos[0]), int(self._agent_pos[1])
+
+        # 스캔: 거리 1..3
+        hit_pos = None
+        hit_kind = None      # "turret" | "enemy" | "tree" | "home"
+        hit_enemy_idx = None
+
+        for dist in range(1, 4):
+            x, y = ax + dx*dist, ay + dy*dist
+            if not (0 <= x < self.W and 0 <= y < self.H):
+                break
+            t = self._base_map[y, x]
+            if t in (R, F):        # 차단
+                break
+
+            # 적 포탑(X)
+            for i, (tx, ty) in enumerate(self._turrets):
+                if tx == x and ty == y:
+                    hit_pos = (x, y); hit_kind = "turret"
+                    break
+            if hit_kind == "turret":
+                break
+
+            # 적(E)
+            for e_idx, epos in enumerate(self._enemies_pos):
+                if epos is not None and self._enemies_hp[e_idx] > 0:
+                    if int(epos[0]) == x and int(epos[1]) == y:
+                        hit_pos = (x, y); hit_kind = "enemy"; hit_enemy_idx = e_idx
+                        break
+            if hit_kind == "enemy":
+                break
+
+            # 나무(T)
+            if t == T:
+                hit_pos = (x, y); hit_kind = "tree"
+                break
+
+            # 우리 포탑(H)
+            if t == H:
+                hit_pos = (x, y); hit_kind = "home"
+                break
+
+        if hit_pos is None:
+            return turret_kills, enemy_kills, tree_kills, total_damage
+
+        # 데미지 적용
+        if hit_kind == "turret":
+            for i, tpos in enumerate(self._turrets):
+                if tpos == hit_pos:
+                    dmg = min(power, self._turrets_hp[i])
+                    self._turrets_hp[i] -= power
+                    total_damage += dmg
+                    if self._turrets_hp[i] <= 0:
+                        tx, ty = tpos
+                        self._base_map[ty, tx] = G
+                        self._turrets.pop(i)
+                        self._turrets_hp.pop(i)
+                        turret_kills += 1
+                    break
+
+        elif hit_kind == "enemy" and hit_enemy_idx is not None:
+            idx = hit_enemy_idx
+            if self._enemies_pos[idx] is not None and self._enemies_hp[idx] > 0:
+                dmg = min(power, self._enemies_hp[idx])
+                self._enemies_hp[idx] -= power
+                total_damage += dmg
+                if self._enemies_hp[idx] <= 0:
+                    ex, ey = int(self._enemies_pos[idx][0]), int(self._enemies_pos[idx][1])
+                    self._enemies_pos[idx] = None
+                    if 0 <= ex < self.W and 0 <= ey < self.H:
+                        self._base_map[ey, ex] = G
+                    enemy_kills += 1
+                    self._enemy_kill_count += 1
+
+        elif hit_kind == "tree":
+            x, y = hit_pos
+            total_damage += power
+            self._base_map[y, x] = G
+            tree_kills += 1
+
+        elif hit_kind == "home":
+            for i, tpos in enumerate(self._home_turrets):
+                if tpos == hit_pos:
+                    dmg = min(power, self._home_turrets_hp[i])
+                    self._home_turrets_hp[i] -= power
+                    total_damage += dmg
+                    if self._home_turrets_hp[i] <= 0:
+                        hx, hy = tpos
+                        self._base_map[hy, hx] = G
+                        self._home_turrets.pop(i)
+                        self._home_turrets_hp.pop(i)
+                    break
+
+        return turret_kills, enemy_kills, tree_kills, total_damage
+
+
+    def _compute_valid_mask(self) -> np.ndarray:
+        mask = np.ones(self.action_space.n, dtype=bool)
+
+        # 이동 가능 여부
+        dir_map = {0:(1,0), 1:(0,1), 2:(-1,0), 3:(0,-1)}
+        for act, (dx, dy) in dir_map.items():
+            nx, ny = self._agent_pos[0] + dx, self._agent_pos[1] + dy
+            if not (0 <= nx < self.W and 0 <= ny < self.H) or not self._is_passable((nx, ny)):
+                mask[act] = False
+
+        # 폭탄/메가폭탄
+        if self._agent_bomb <= 0:
+            mask[4:8] = False
+        if self._agent_mega_bomb <= 0:
+            mask[8:12] = False
+
+        # 암호풀기
+        if not self._is_adjacent_to_supply() or self._agent_mega_bomb >= 10:
+            mask[12] = False
+
+        return mask
+
+    # SB3-contrib에서 VecEnv를 통해 이 메서드를 호출합니다.
+    def action_masks(self) -> np.ndarray:
+        return self.valid_mask
