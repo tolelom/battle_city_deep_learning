@@ -46,6 +46,7 @@ class BattleSsafyEnv(gym.Env):
         self._agent_hp = agent_hp
         self._yellow_cards = 0
         self._max_yellow_card = 3
+        self._mega_bombs = 0
 
         # agent가 볼수 있는 상황 정의
         self.observation_space = gym.spaces.Dict(
@@ -55,7 +56,9 @@ class BattleSsafyEnv(gym.Env):
                 "map_onehot": gym.spaces.Box(0,1, shape=(self.num_tile_types,size,size), dtype=np.int8),
                 "target_hp": gym.spaces.Box(0, target_hp, shape=(), dtype=np.int32),
                 "agent_hp": gym.spaces.Box(0, agent_hp, shape=(), dtype=np.int32),
-                "yellow_cards": gym.spaces.Box(0, self._max_yellow, shape=(), dtype=np.int32),
+                "yellow_cards": gym.spaces.Box(0, self._max_yellow_card, shape=(), dtype=np.int32),
+                "mega_bombs":   gym.spaces.Box(0, self._mega_bombs, shape=(), dtype=np.int32),
+
             }
         )
 
@@ -96,6 +99,7 @@ class BattleSsafyEnv(gym.Env):
             "target_hp": np.array(self._target_hp, dtype=np.int32),
             "agent_hp":   np.array(self._agent_hp, dtype=np.int32),
             "yellow_cards": np.array(self._yellow_cards, dtype=np.int32),
+            "mega_bombs":   np.array(self._mega_bombs, dtype=np.int32),
         }
 
     # 디버깅 용, 학습 알고리즘에서 사용하면 안됨
@@ -107,6 +111,7 @@ class BattleSsafyEnv(gym.Env):
             "target_hp": self._target_hp,
             "agent_hp":  self._agent_hp,
             "yellow_cards": self._yellow_cards,
+            "mega_bombs":   self._mega_bombs,
         }
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
@@ -118,7 +123,6 @@ class BattleSsafyEnv(gym.Env):
             if self._can_move[self._fixed_map[pos[1], pos[0]]]:
                 self._agent_location = pos
                 break
-        self._agent_hp = self._max_agent_hp
 
         # target 위치 랜덤 생성(agent와 다른 위치 보장)
         while True:
@@ -127,6 +131,8 @@ class BattleSsafyEnv(gym.Env):
                 not np.array_equal(pos, self._agent_location)):
                 self._target_location = pos
                 break
+
+        self._agent_hp = self._max_agent_hp
         self._target_hp = self._max_target_hp
         self._yellow_cards = 0
 
@@ -171,7 +177,7 @@ class BattleSsafyEnv(gym.Env):
 
             if hit:
                 self._target_hp -= 30
-                reward += 5.0
+                reward += 5
                 if self._target_hp <= 0:
                     reward += 10
                     terminated = True
@@ -181,7 +187,35 @@ class BattleSsafyEnv(gym.Env):
                 if self._yellow_cards >= self._max_yellow_card:
                     terminated = True
                     reward -= 20
-        
+
+        elif action in range(8, 12):
+            attack_direction = self._attack_direction[action - 8]
+            hit = False
+
+            if self._mega_bombs > 0:
+                for dist in range(1, 4):
+                    pos= self._agent_location + attack_direction * dist
+                    if np.any(pos < 0) or np.any(pos >= self.size):
+                        break
+                    tile = self._fixed_map[pos[1], pos[0]]
+                    if not self._can_attack_through[tile]:
+                        break
+                    if np.array_equal(pos, self._target_location):
+                        hit = True
+                        break
+            if hit:
+                self._target_hp -= 70
+                reward += 10
+                if self._target_hp <= 0:
+                    reward += 10
+                    terminated = True
+            else:
+                reward -= 5
+                self._yellow_cards += 1
+                if self._yellow_cards >= self._max_yellow_card:
+                    terminated = True
+                    reward -= 20
+
         # 대기
         else:
             reward -= 3
