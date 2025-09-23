@@ -227,18 +227,70 @@ class BattleSsafyEnv(gym.Env):
         info = self._get_info()
         return observation, reward, terminated, truncated, info
 
-    def render(self):
-        """Render the environment for human viewing."""
-        if self.render_mode == "human":
-            # Print a simple ASCII representation
-            for y in range(self.size - 1, -1, -1):  # Top to bottom
+    def render(self, mode="human"):
+        # human 모드: 컬러 ASCII + 상태 정보
+        if mode == "human":
+            status = (
+                f"Agent HP: {self._agent_hp}/{self._max_agent_hp} | "
+                f"Target HP: {self._target_hp}/{self._max_target_hp} | "
+                f"Yellow Cards: {self._yellow_cards}/{self._max_yellow_card} | "
+                f"Mega Bombs: {self._mega_bombs}"
+            )
+            print(status)
+            # 타일별 심볼 정의
+            symbols = {
+                0: ". ",  # 풀
+                1: ": ",  # 모래
+                2: "~ ",  # 물
+                3: "O ",  # 바위
+                4: "T ",  # 나무
+                5: "+ "   # 보급
+            }
+            for y in range(self.size - 1, -1, -1):
                 row = ""
                 for x in range(self.size):
                     if np.array_equal([x, y], self._agent_location):
-                        row += "A "  # Agent
+                        row += "A "
                     elif np.array_equal([x, y], self._target_location):
-                        row += "T "  # Target
+                        row += "X "
                     else:
-                        row += ". "  # Empty
+                        tile = self._fixed_map[y, x]
+                        row += symbols.get(tile, "? ")
                 print(row)
             print()
+
+        # rgb_array 모드: NumPy 배열 (H,W,3) 반환
+        elif mode == "rgb_array":
+            # 각 타일에 RGB 색 할당
+            color_map = {
+                0: (34, 139,  34),  # 풀 (ForestGreen)
+                1: (238, 214, 175), # 모래 (SandyBrown)
+                2: ( 65, 105, 225), # 물 (RoyalBlue)
+                3: (128, 128, 128), # 바위 (Gray)
+                4: ( 34, 139,  34), # 나무 (ForestGreen) – 같은 색으로 처리
+                5: (255, 215,   0), # 보급 (Gold)
+            }
+            cell_size = 20
+            height = self.size * cell_size
+            width  = self.size * cell_size
+            canvas = np.zeros((height, width, 3), dtype=np.uint8)
+
+            # 배경 타일 그리기
+            for y in range(self.size):
+                for x in range(self.size):
+                    color = color_map[self._fixed_map[y, x]]
+                    y0, y1 = (self.size - 1 - y) * cell_size, (self.size - y) * cell_size
+                    x0, x1 = x * cell_size, (x + 1) * cell_size
+                    canvas[y0:y1, x0:x1] = color
+
+            # 에이전트와 타겟 표시
+            ax0, ay0 = self._agent_location * cell_size
+            canvas[height - ay0 - cell_size:height - ay0, ax0:ax0 + cell_size] = (255, 0, 0)  # 에이전트(빨강)
+            tx0, ty0 = self._target_location * cell_size
+            canvas[height - ty0 - cell_size:height - ty0, tx0:tx0 + cell_size] = (0, 0, 0)  # 타겟(검정)
+
+            return canvas
+
+        else:
+            raise ValueError(f"Unknown render mode: {mode}")
+
