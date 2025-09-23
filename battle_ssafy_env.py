@@ -14,7 +14,7 @@ class BattleSsafyEnv(gym.Env):
         "render_fps": 30,
     }
 
-    def __init__(self, size: int = 16, fixed_map: Optional[np.ndarray] = None):
+    def __init__(self, size: int = 16, fixed_map: Optional[np.ndarray] = None, target_hp: int = 100):
         # 맵의 크기
         self.size = size
         self.num_tile_types = 6
@@ -27,11 +27,15 @@ class BattleSsafyEnv(gym.Env):
 
         # 순서대로 풀, 모래, 물, 바위, 나무, 보급
         self._can_move = np.array([True, True, False, False, False, False,], dtype=bool)
+        self._can_attack_through = np.array([True, True, True, False, False, False], dtype=bool)
 
         # 위치들 초기값은 reset()에서 랜덤하게 생성
         # (-1, -1)을 초기화 되지 않은 상황으로 설정
         self._agent_location = np.array([-1, -1], dtype=np.int32)
         self._target_location = np.array([-1, -1], dtype=np.int32)
+
+        self._max_target_hp = target_hp
+        self._target_hp = target_hp
 
         # agent가 볼수 있는 상황 정의
         self.observation_space = gym.spaces.Dict(
@@ -39,6 +43,7 @@ class BattleSsafyEnv(gym.Env):
                 "agent": gym.spaces.Box(0, size - 1, shape=(2,), dtype=np.int32), # [x, y]
                 "target": gym.spaces.Box(0, size - 1, shape=(2,), dtype=np.int32), # [x, y]
                 "map_onehot": gym.spaces.Box(0,1, shape=(self.num_tile_types,size,size), dtype=np.int8),
+                "target_hp": gym.spaces.Box(0, target_hp, shape=(), dtype=np.int32),
             }
         )
 
@@ -50,6 +55,13 @@ class BattleSsafyEnv(gym.Env):
             1: np.array([0, 1]),
             2: np.array([-1, 0]),
             3: np.array([0, -1]),
+        }
+
+        self._attack_direction = {
+            0: np.array([1, 0]),   # 우
+            1: np.array([0, 1]),   # 상
+            2: np.array([-1, 0]),  # 좌
+            3: np.array([0, -1]),  # 하
         }
 
         self.seed()
@@ -69,6 +81,7 @@ class BattleSsafyEnv(gym.Env):
             "agent": self._agent_location.copy(),
             "target": self._target_location.copy(),
             "map_onehot": self._encode_onehot(),
+            "target_hp": np.array(self._target_hp, dtype=np.int32),
         }
 
     # 디버깅 용, 학습 알고리즘에서 사용하면 안됨
@@ -76,7 +89,8 @@ class BattleSsafyEnv(gym.Env):
         return {
             "distance": np.linalg.norm(
                 self._agent_location - self._target_location, ord=1
-            )
+            ),
+            "target_hp": self._target_hp,
         }
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
@@ -96,6 +110,7 @@ class BattleSsafyEnv(gym.Env):
                 not np.array_equal(pos, self._agent_location)):
                 self._target_location = pos
                 break
+        self._target_hp = self._max_target_hp
 
         observation = self._get_obs()
         info = self._get_info()
@@ -103,25 +118,53 @@ class BattleSsafyEnv(gym.Env):
         return observation, info
 
     def step(self, action):
-        direction = self._action_to_direction[action]
-        next_location = np.clip(self._agent_location + direction, 0, self.size - 1)
-        tile = self._fixed_map[next_location[1], next_location[0]]
+        reward = 0
+        terminated = False
 
-        if self._can_move[tile]:
-            self._agent_location = next_location
+        if action in range(4):
+            direction = self._action_to_direction[action]
+            next_location = np.clip(self._agent_location + direction, 0, self.size - 1)
+            tile = self._fixed_map[next_location[1], next_location[0]]
 
-        terminated = np.array_equal(self._agent_location, self._target_location)
+            if self._can_move[tile]:
+                self._agent_location = next_location
+                reward -= -0.1
+            else:
+                reward -= 3
+
+        elif action in range(4, 8):
+            attack_direction = self._attack_direction[action - 4]
+            hit = False
+
+            for dist in range(1, 4):
+                check_pos = self._agent_location + attack_direction * dist
+                if np.any(check_pos < 0) or np.any(check_pos >= self.size):
+                    break
+                tile = self._fixed_map[check_pos[1], check_pos[0]]
+                if not self._can_attack_through[tile]:
+                    break
+                if np.array_equal(check_pos, self._target_location):
+                    hit = True
+                    break
+
+            if hit:
+                self._target_hp -= 30
+                reward += 5.0
+                if self._target_hp <= 0:
+                    reward += 10
+                    terminated = True
+            else:
+                reward -= 3
+        
+        # 대기
+        else:
+            reward -= 3
+
 
         # 시간 제한 없음(추후 변경 예정)
         truncated = False
-
-        # 보상 세팅
-        reward = 10 if terminated else -0.005
-        # 보상 세팅 끝
-
         observation = self._get_obs()
         info = self._get_info()
-
         return observation, reward, terminated, truncated, info
 
     def render(self):
