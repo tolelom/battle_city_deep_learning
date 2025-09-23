@@ -54,10 +54,10 @@ class BattleSsafyEnv(gym.Env):
                 "agent": gym.spaces.Box(0, size - 1, shape=(2,), dtype=np.int32), # [x, y]
                 "target": gym.spaces.Box(0, size - 1, shape=(2,), dtype=np.int32), # [x, y]
                 "map_onehot": gym.spaces.Box(0,1, shape=(self.num_tile_types,size,size), dtype=np.int8),
-                "target_hp": gym.spaces.Box(0, target_hp, shape=(), dtype=np.int32),
-                "agent_hp": gym.spaces.Box(0, agent_hp, shape=(), dtype=np.int32),
-                "yellow_cards": gym.spaces.Box(0, self._max_yellow_card, shape=(), dtype=np.int32),
-                "mega_bombs":   gym.spaces.Box(0, self._mega_bombs, shape=(), dtype=np.int32),
+                "target_hp": gym.spaces.Box(0, target_hp, shape=(1,), dtype=np.int32),
+                "agent_hp": gym.spaces.Box(0, agent_hp, shape=(1,), dtype=np.int32),
+                "yellow_cards": gym.spaces.Box(0, self._max_yellow_card, shape=(1,), dtype=np.int32),
+                "mega_bombs":   gym.spaces.Box(0, self._mega_bombs, shape=(1,), dtype=np.int32),
 
             }
         )
@@ -152,7 +152,7 @@ class BattleSsafyEnv(gym.Env):
 
             if self._can_move[tile]:
                 self._agent_location = next_location
-                reward -= -0.1
+                reward -= 0.1
             else:
                 reward -= 3
                 self._yellow_cards += 1
@@ -163,24 +163,31 @@ class BattleSsafyEnv(gym.Env):
         elif action in range(4, 8):
             attack_direction = self._attack_direction[action - 4]
             hit = False
-
+            valid = False
             for dist in range(1, 4):
-                check_pos = self._agent_location + attack_direction * dist
-                if np.any(check_pos < 0) or np.any(check_pos >= self.size):
+                pos = self._agent_location + attack_direction * dist
+                if np.any(pos < 0) or np.any(pos >= self.size):
                     break
-                tile = self._fixed_map[check_pos[1], check_pos[0]]
+                tile = self._fixed_map[pos[1], pos[0]]
+                if tile == 4: # 나무
+                    self._fixed_map[pos[1], pos[0]] = 0
+                    valid = True
+                    break
+
                 if not self._can_attack_through[tile]:
                     break
-                if np.array_equal(check_pos, self._target_location):
+                if np.array_equal(pos, self._target_location):
+                    valid = True
                     hit = True
                     break
 
-            if hit:
-                self._target_hp -= 30
-                reward += 5
-                if self._target_hp <= 0:
-                    reward += 10
-                    terminated = True
+            if valid:
+                if hit:
+                    self._target_hp -= 30
+                    reward += 5
+                    if self._target_hp <= 0:
+                        reward += 10
+                        terminated = True
             else:
                 reward -= 3
                 self._yellow_cards += 1
@@ -191,6 +198,7 @@ class BattleSsafyEnv(gym.Env):
         elif action in range(8, 12):
             attack_direction = self._attack_direction[action - 8]
             hit = False
+            valid = False
 
             if self._mega_bombs > 0:
                 for dist in range(1, 4):
@@ -198,17 +206,23 @@ class BattleSsafyEnv(gym.Env):
                     if np.any(pos < 0) or np.any(pos >= self.size):
                         break
                     tile = self._fixed_map[pos[1], pos[0]]
+                    if tile == 4:  # 나무
+                        self._fixed_map[pos[1], pos[0]] = 0
+                        valid = True
+                        break
                     if not self._can_attack_through[tile]:
                         break
                     if np.array_equal(pos, self._target_location):
+                        valid = True
                         hit = True
                         break
-            if hit:
-                self._target_hp -= 70
-                reward += 10
-                if self._target_hp <= 0:
+            if valid:
+                if hit:
+                    self._target_hp -= 70
                     reward += 10
-                    terminated = True
+                    if self._target_hp <= 0:
+                        reward += 10
+                        terminated = True
             else:
                 reward -= 5
                 self._yellow_cards += 1
@@ -239,10 +253,10 @@ class BattleSsafyEnv(gym.Env):
             print(status)
             # 타일별 심볼 정의
             symbols = {
-                0: ". ",  # 풀
-                1: ": ",  # 모래
-                2: "~ ",  # 물
-                3: "O ",  # 바위
+                0: "G ",  # 풀
+                1: "S ",  # 모래
+                2: "W ",  # 물
+                3: "R ",  # 바위
                 4: "T ",  # 나무
                 5: "+ "   # 보급
             }
