@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+.idea/
+.vscode/
+.env
+*.egg-info/
+dist/
+build/
+tensorboard_logs/
+best_model/
