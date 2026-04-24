@@ -1,0 +1,6 @@
+gymnasium>=1.0
+stable-baselines3>=2.3
+torch>=2.0
+numpy>=1.26
+tensorboard>=2.15
+pytest>=8.0

@@ -9,15 +9,21 @@ Gymnasium 커스텀 환경 + Stable Baselines3 PPO로 에이전트 학습.
 - **학습**: Stable Baselines3 (PPO)
 - **시각화**: TensorBoard
 
+## 설치
+
+```bash
+pip install -r requirements.txt
+```
+
 ## 실행
 
 ```bash
 # 학습
 python battle_ssafy_train.py
 
-# 환경 검증
-python battle_ssafy_env_checker.py
+# 평가
+python battle_ssafy_eval.py
 
-# 녹화
-python battle_ssafy_record.py
+# 테스트
+pytest tests/
 ```

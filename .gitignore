@@ -9,3 +9,4 @@ dist/
 build/
 tensorboard_logs/
 best_model/
+.pytest_cache/
