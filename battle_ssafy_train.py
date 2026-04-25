@@ -69,10 +69,7 @@ def main() -> None:
         total_timesteps=TOTAL_TIMESTEPS,
         callback=eval_callback,
     )
-
-    save_path = f"{BEST_MODEL_DIR}/ppo_battle_ssafy"
-    model.save(save_path)
-    print(f"학습 완료 및 모델 저장됨: {save_path}.zip")
+    print(f"학습 완료. 최고 모델: {BEST_MODEL_DIR}/best_model.zip")
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ from stable_baselines3.common.monitor import Monitor
 from battle_ssafy_env import ENV_ID, register_env
 
 
-MODEL_PATH = "./best_model/ppo_battle_ssafy.zip"
+MODEL_PATH = "./best_model/best_model.zip"
 N_EVAL_EPISODES = 100
 
 

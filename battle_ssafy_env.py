@@ -21,8 +21,9 @@ class BattleSsafyEnv(gym.Env):
         "render_fps": 30,
     }
 
-    def __init__(self, size: int = 16):
+    def __init__(self, size: int = 16, render_mode: Optional[str] = None):
         self.size = size
+        self.render_mode = render_mode
 
         # 위치 초기값 (-1, -1): reset 전 사용 방지 가드
         self._agent_location = np.array([-1, -1], dtype=np.int32)
@@ -30,8 +31,8 @@ class BattleSsafyEnv(gym.Env):
 
         self.observation_space = gym.spaces.Dict(
             {
-                "agent": gym.spaces.Box(0, size - 1, shape=(2,), dtype=int),
-                "target": gym.spaces.Box(0, size - 1, shape=(2,), dtype=int),
+                "agent": gym.spaces.Box(0, size - 1, shape=(2,), dtype=np.int32),
+                "target": gym.spaces.Box(0, size - 1, shape=(2,), dtype=np.int32),
             }
         )
 
